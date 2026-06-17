@@ -1,0 +1,33 @@
+{
+  "name": "my-project",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mrapo2007-svg/finance-analyzer-bot.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/mrapo2007-svg/finance-analyzer-bot/issues"
+  },
+  "homepage": "https://github.com/mrapo2007-svg/finance-analyzer-bot#readme",
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.0",
+    "@supabase/supabase-js": "^2.108.2",
+    "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
+    "grammy": "^1.44.0",
+    "openai": "^6.42.0",
+    "pdf-parse": "^2.4.5"
+  }
+}
