@@ -101,7 +101,7 @@ async function assistant(userText, contextText) {
   const sys = 'Ты — личный финансовый ИИ-ассистент пользователя в Telegram, тёплый и умный, общаешься по-человечески на русском. Сегодня ' + today + '.\n' +
     'Твоя зона — личные финансы этого пользователя: траты, доходы, отчёты, бюджеты, цели, реквизиты (счета). Если просят не про финансы (нарисовать картинку, написать код, общие вопросы) — мягко откажись и предложи помочь с деньгами. На приветствия отвечай дружелюбно и коротко.\n' +
     'У тебя есть данные пользователя (ниже). Когда спрашивают про суммы, отчёт или «сколько потратил/заработал» — посчитай по данным и ответь живым текстом с конкретными цифрами в тенге, кратко и по делу.\n' +
-    'Верни ТОЛЬКО JSON. Поле action — одно из: "reply","expense","budget_set","goal_create","account_create","report_file","advice","goals_show","budget_show","delete","tx_list".\n' +
+    'Верни ТОЛЬКО JSON. Поле action — одно из: "reply","expense","budget_set","goal_create","account_create","report_file","advice","goals_show","budget_show","delete","tx_list","balance".\n' +
     '- reply: ответь текстом — приветствие, ответ на вопрос про финансы с цифрами, вежливый отказ. Текст положи в поле reply.\n' +
     '- expense: пользователь сообщил трату или доход → date (YYYY-MM-DD, по умолчанию сегодня), description, amount (число; расход отрицательный, доход положительный), currency (валюта суммы: KZT/USD/EUR/RUB; «доллар»→USD, «рубль»→RUB, «евро»→EUR, по умолчанию KZT), category (Транспорт/Еда/Покупки/Подписки/Развлечения/Аренда/Переводы/Доход/Прочее), person (имя или "").\n' +
     '- budget_set: category, amount.\n' +
@@ -109,7 +109,7 @@ async function assistant(userText, contextText) {
     '- account_create: name.\n' +
     '- delete: пользователь просит что-то удалить → what ("account" — реквизит/отчёт, "goal" — цель, "budget" — бюджет, "all_reports" — все реквизиты сразу), name (название реквизита/цели или категория бюджета; "все"/"" если все или не уточнил).\n' +
     '- report_file: пользователь просит именно ФАЙЛ/Excel-отчёт → account (название реквизита или ""), period (период: "all" — за всё время, "1m" — последний месяц, "3m" — 3 месяца, "6m" — полгода, "12m" — год; по умолчанию "all").\n' +
-    '- advice: просит совет по экономии. goals_show: показать цели кнопками. budget_show: показать бюджеты. tx_list: показать последние операции / исправить или поправить трату («покажи последние траты», «исправь покупку», «измени сумму»).\n' +
+    '- advice: просит совет по экономии. goals_show: показать цели кнопками. budget_show: показать бюджеты. tx_list: показать последние операции / исправить или поправить трату («покажи последние траты», «исправь покупку», «измени сумму»). balance: «сколько у меня осталось», «мой баланс», «сколько денег», «я в плюсе или минусе».\n' +
     'Действуй уверенно: если это команда (запиши трату, покажи отчёт, удали, поставь бюджет, создай цель/реквизит) — сразу выбирай нужное действие, не переспрашивай. Отказывай (reply) только если просьба вообще не про финансы. Примеры: «запиши кофе 1500»→expense; «покажи отчёт по Kaspi за 3 месяца»→report_file; «удали цель отпуск»→delete; «поставь лимит на еду 80000»→budget_set; «создай реквизит Каспи»→account_create; «сколько потратил за месяц»→reply с цифрами.\n' +
     'Данные пользователя:\n' + contextText;
   const c = await openai.chat.completions.create({ model: 'gpt-4o-mini', response_format: { type: 'json_object' }, messages: [{ role: 'system', content: sys }, { role: 'user', content: userText }] });
@@ -347,6 +347,30 @@ async function doRecentTx(ctx) {
   return ctx.reply('🧾 Последние операции — выбери, чтобы исправить:', { reply_markup: ik });
 }
 bot.command('edit', (ctx) => doRecentTx(ctx));
+async function doBalance(ctx) {
+  const { data } = await db.from('transactions').select('amount,op_date').eq('tg_id', ctx.from.id);
+  if (!data || !data.length) return ctx.reply('Пока нет записей. Добавь траты или доходы — и я посчитаю баланс 💰', { reply_markup: mainKb });
+  const ms = new Date(); ms.setDate(1); const msISO = ms.toISOString().slice(0, 10);
+  let incM = 0, expM = 0, incA = 0, expA = 0;
+  for (const t of data) {
+    const a = Number(t.amount);
+    if (a >= 0) { incA += a; if (t.op_date >= msISO) incM += a; }
+    else { expA += -a; if (t.op_date >= msISO) expM += -a; }
+  }
+  const netM = Math.round(incM - expM), netA = Math.round(incA - expA);
+  let msg = '💰 Баланс (по записям в боте)\n\n';
+  msg += '📆 Этот месяц:\n';
+  msg += '  ↗️ Доход: ' + fmt(Math.round(incM)) + ' ₸\n';
+  msg += '  ↘️ Расход: ' + fmt(Math.round(expM)) + ' ₸\n';
+  msg += '  ' + (netM >= 0 ? '✅ Осталось: +' : '⚠️ В минусе: −') + fmt(netM) + ' ₸\n\n';
+  msg += '📊 За всё время:\n';
+  msg += '  ↗️ Доход: ' + fmt(Math.round(incA)) + ' ₸\n';
+  msg += '  ↘️ Расход: ' + fmt(Math.round(expA)) + ' ₸\n';
+  msg += '  ' + (netA >= 0 ? '✅ Чистыми: +' : '⚠️ В минусе: −') + fmt(netA) + ' ₸\n\n';
+  msg += 'ℹ️ Это по тому, что записано в боте, а не баланс банковской карты.';
+  return ctx.reply(msg, { reply_markup: mainKb });
+}
+bot.command('balance', (ctx) => doBalance(ctx));
 bot.callbackQuery(/^txedit:(\d+)$/, async (ctx) => {
   const id = Number(ctx.match[1]);
   const { data: t } = await db.from('transactions').select('*').eq('id', id).single();
@@ -590,6 +614,7 @@ async function handleText(ctx, text) {
     if (r.action === 'goals_show') return doGoals(ctx);
     if (r.action === 'budget_show') return doBudgetMenu(ctx);
     if (r.action === 'tx_list') return doRecentTx(ctx);
+    if (r.action === 'balance') return doBalance(ctx);
     if (r.action === 'delete') {
       const what = r.what || 'account';
       const nm = (r.name || '').toString().toLowerCase().trim();
