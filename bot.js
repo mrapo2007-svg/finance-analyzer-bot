@@ -133,16 +133,17 @@ function pieChartPNG(labels, values) { const W = 420, H = 320 + 24 * labels.leng
 function barChartPNG(labels, plan, actual) { const rowH = 46, padTop = 46, padLeft = 140, padRight = 70, W = 580, H = padTop + labels.length * rowH + 34; const cv = createCanvas(W, H), x = cv.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, W, H); x.fillStyle = '#222'; x.font = 'bold 16px Arial'; x.fillText('План vs Факт', padLeft, 26); const maxV = Math.max(1, ...plan, ...actual), barW = W - padLeft - padRight; x.font = '13px Arial'; labels.forEach((l, i) => { const y = padTop + i * rowH; x.fillStyle = '#222'; x.textAlign = 'right'; x.fillText(l, padLeft - 8, y + 15); x.textAlign = 'left'; x.fillStyle = '#9dc3e6'; x.fillRect(padLeft, y, (plan[i] / maxV) * barW, 14); x.fillStyle = actual[i] > plan[i] ? '#e15759' : '#59a14f'; x.fillRect(padLeft, y + 18, (actual[i] / maxV) * barW, 14); }); const ly = H - 22; x.fillStyle = '#9dc3e6'; x.fillRect(padLeft, ly, 14, 14); x.fillStyle = '#222'; x.fillText('План', padLeft + 20, ly + 12); x.fillStyle = '#59a14f'; x.fillRect(padLeft + 80, ly, 14, 14); x.fillStyle = '#222'; x.fillText('Факт <= плана', padLeft + 100, ly + 12); x.fillStyle = '#e15759'; x.fillRect(padLeft + 230, ly, 14, 14); x.fillStyle = '#222'; x.fillText('Факт > плана', padLeft + 250, ly + 12); return cv.toBuffer('image/png'); }
 
 const GUIDE = '📘 Как пользоваться — всё просто:\n\n' +
-  '1️⃣  Добавляй траты\n' +
-  'Пиши или говори как другу: «такси 800», «продукты 5000 вчера».\n' +
+  '1️⃣  Записывай\n' +
+  'Пиши или говори как другу: «такси 800», «зарплата 400000».\n' +
   'Или пришли PDF-выписку из банка 📄 — разберу всё сам.\n\n' +
-  '2️⃣  Смотри, куда уходят деньги\n' +
-  'Спроси словами: «сколько я потратил за месяц?» — отвечу.\n' +
-  'Или жми 📊 Отчёт — пришлю наглядный файл.\n\n' +
-  '3️⃣  Ставь цели и бюджеты\n' +
-  '🎯 копить к дате  ·  📋 лимиты по категориям.\n\n' +
-  '💡 Можно ничего не нажимать — просто скажи, что хочешь.\n' +
-  '🔒 Твои данные видишь только ты.';
+  '2️⃣  Спрашивай словами\n' +
+  '«Сколько я потратил за месяц?», «Сколько осталось?», «Сколько доллар сейчас?» — отвечу.\n' +
+  'Или жми 📊 Отчёт — пришлю наглядный Excel.\n\n' +
+  '3️⃣  Управляй\n' +
+  '🎯 цели  ·  📋 бюджеты  ·  ✏️ «последние траты» — исправить  ·  💰 «баланс».\n\n' +
+  '🔔 Раз в неделю сам пришлю итог недели и предупрежу о превышении бюджета.\n' +
+  '🔒 Данные видишь только ты. В любой момент можно «экспорт» или удалить всё.\n' +
+  '💡 Можно ничего не нажимать — просто скажи, что хочешь.';
 async function doHelp(ctx) { return ctx.reply(GUIDE, { reply_markup: mainKb }); }
 async function doFeedbackPrompt(ctx) {
   pendingFeedback.set(ctx.from.id, true);
