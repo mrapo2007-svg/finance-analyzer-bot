@@ -101,13 +101,14 @@ async function assistant(userText, contextText) {
   const sys = 'Ты — личный финансовый ИИ-ассистент пользователя в Telegram, тёплый и умный, общаешься по-человечески на русском. Сегодня ' + today + '.\n' +
     'Твоя зона — личные финансы этого пользователя: траты, доходы, отчёты, бюджеты, цели, реквизиты (счета). Если просят не про финансы (нарисовать картинку, написать код, общие вопросы) — мягко откажись и предложи помочь с деньгами. На приветствия отвечай дружелюбно и коротко.\n' +
     'У тебя есть данные пользователя (ниже). Когда спрашивают про суммы, отчёт или «сколько потратил/заработал» — посчитай по данным и ответь живым текстом с конкретными цифрами в тенге, кратко и по делу.\n' +
-    'Верни ТОЛЬКО JSON. Поле action — одно из: "reply","expense","budget_set","goal_create","account_create","report_file","advice","goals_show","budget_show","delete","tx_list","balance".\n' +
+    'Верни ТОЛЬКО JSON. Поле action — одно из: "reply","expense","budget_set","goal_create","account_create","report_file","advice","goals_show","budget_show","delete","tx_list","balance","export".\n' +
     '- reply: ответь текстом — приветствие, ответ на вопрос про финансы с цифрами, вежливый отказ. Текст положи в поле reply.\n' +
     '- expense: пользователь сообщил трату или доход → date (YYYY-MM-DD, по умолчанию сегодня), description, amount (число; расход отрицательный, доход положительный), currency (валюта суммы: KZT/USD/EUR/RUB; «доллар»→USD, «рубль»→RUB, «евро»→EUR, по умолчанию KZT), category (Транспорт/Еда/Покупки/Подписки/Развлечения/Аренда/Переводы/Доход/Прочее), person (имя или "").\n' +
     '- budget_set: category, amount.\n' +
     '- goal_create: создать цель накопления → target (ЧИСЛО — сумма цели в тенге, сколько накопить), name (короткое название на что копим, БЕЗ суммы и даты; если не сказано — "Цель"), deadline (YYYY-MM-DD или ""). Пример: «накопить 150000 на отпуск к 1 сентября» → name:"Отпуск", target:150000, deadline:"2026-09-01".\n' +
     '- account_create: name.\n' +
-    '- delete: пользователь просит что-то удалить → what ("account" — реквизит/отчёт, "goal" — цель, "budget" — бюджет, "all_reports" — все реквизиты сразу), name (название реквизита/цели или категория бюджета; "все"/"" если все или не уточнил).\n' +
+    '- delete: пользователь просит что-то удалить → what ("account" — реквизит/отчёт, "goal" — цель, "budget" — бюджет, "all_reports" — все реквизиты сразу, "all_data" — ВСЕ данные пользователя: «удали все мои данные», «сотри всё про меня»), name (название реквизита/цели или категория бюджета; "все"/"" если все или не уточнил).\n' +
+    '- export: «выгрузи мои данные», «скачать мои траты», «экспорт в excel».\n' +
     '- report_file: пользователь просит именно ФАЙЛ/Excel-отчёт → account (название реквизита или ""), period (период: "all" — за всё время, "1m" — последний месяц, "3m" — 3 месяца, "6m" — полгода, "12m" — год; по умолчанию "all").\n' +
     '- advice: просит совет по экономии. goals_show: показать цели кнопками. budget_show: показать бюджеты. tx_list: показать последние операции / исправить или поправить трату («покажи последние траты», «исправь покупку», «измени сумму»). balance: «сколько у меня осталось», «мой баланс», «сколько денег», «я в плюсе или минусе».\n' +
     'Действуй уверенно: если это команда (запиши трату, покажи отчёт, удали, поставь бюджет, создай цель/реквизит) — сразу выбирай нужное действие, не переспрашивай. Отказывай (reply) только если просьба вообще не про финансы. Примеры: «запиши кофе 1500»→expense; «покажи отчёт по Kaspi за 3 месяца»→report_file; «удали цель отпуск»→delete; «поставь лимит на еду 80000»→budget_set; «создай реквизит Каспи»→account_create; «сколько потратил за месяц»→reply с цифрами.\n' +
@@ -371,6 +372,79 @@ async function doBalance(ctx) {
   return ctx.reply(msg, { reply_markup: mainKb });
 }
 bot.command('balance', (ctx) => doBalance(ctx));
+async function doExport(ctx) {
+  const { data } = await db.from('transactions').select('*').eq('tg_id', ctx.from.id).order('op_date', { ascending: true });
+  if (!data || !data.length) return ctx.reply('Пока нечего выгружать — нет ни одной операции.', { reply_markup: mainKb });
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Операции');
+  ws.columns = [
+    { header: 'Дата', key: 'date', width: 12 },
+    { header: 'Описание', key: 'desc', width: 34 },
+    { header: 'Категория', key: 'cat', width: 16 },
+    { header: 'Сумма (₸)', key: 'amt', width: 14 },
+    { header: 'Реквизит', key: 'acc', width: 18 },
+  ];
+  ws.getRow(1).font = { bold: true };
+  for (const t of data) ws.addRow({ date: t.op_date, desc: t.description, cat: t.category, amt: Number(t.amount), acc: t.account || '' });
+  const ab = await wb.xlsx.writeBuffer();
+  await ctx.replyWithDocument(new InputFile(Buffer.from(ab), 'Мои данные.xlsx'), { caption: '📦 Вот все твои данные — ' + data.length + ' операций. Полная выгрузка, файл твой.', reply_markup: mainKb });
+}
+bot.command('export', (ctx) => doExport(ctx));
+async function spendNudge(tgId, txn) {
+  try {
+    const amt = Number(txn.amount);
+    if (!(amt < 0)) return '';
+    const spent = -amt; let note = '';
+    const ms = new Date(); ms.setDate(1); const msISO = ms.toISOString().slice(0, 10);
+    const { data: b } = await db.from('budgets').select('amount').eq('tg_id', tgId).eq('category', txn.category);
+    if (b && b[0]) {
+      const limit = Number(b[0].amount);
+      const { data: txs } = await db.from('transactions').select('amount').eq('tg_id', tgId).eq('category', txn.category).lt('amount', 0).gte('op_date', msISO);
+      const used = (txs || []).reduce((s, t) => s + (-Number(t.amount)), 0);
+      const pct = limit > 0 ? Math.round(used / limit * 100) : 0;
+      if (used > limit) note += '\n⚠️ Бюджет «' + txn.category + '» превышен: ' + fmt(Math.round(used)) + '/' + fmt(limit) + ' ₸ (' + pct + '%).';
+      else if (pct >= 80) note += '\n🔔 По «' + txn.category + '» уже ' + pct + '% бюджета (' + fmt(Math.round(used)) + '/' + fmt(limit) + ' ₸).';
+    }
+    const { data: recent } = await db.from('transactions').select('amount').eq('tg_id', tgId).lt('amount', 0).order('id', { ascending: false }).limit(41);
+    const others = (recent || []).map(t => -Number(t.amount)).filter(v => v > 0);
+    if (others.length >= 6) {
+      const avg = others.reduce((a, c) => a + c, 0) / others.length;
+      if (avg > 0 && spent >= avg * 3 && spent >= 10000) { const x = (spent / avg).toFixed(1).replace(/\.0$/, ''); note += '\n📍 Крупная трата — примерно в ' + x + '× больше обычной.'; }
+    }
+    return note;
+  } catch (e) { console.error('spendNudge', e.message); return ''; }
+}
+bot.command('stats', async (ctx) => {
+  const admin = process.env.ADMIN_ID;
+  if (!admin) return ctx.reply('ℹ️ Статистика только для админа.\nТвой ID: ' + ctx.from.id + ' — добавь в .env строку ADMIN_ID=' + ctx.from.id + ' и перезапусти.');
+  if (String(ctx.from.id) !== String(admin)) return;
+  try {
+    const { data: tx } = await db.from('transactions').select('tg_id,created_at');
+    const ids = new Set((tx || []).map(t => t.tg_id));
+    const now = Date.now(); const a7 = new Set(), a30 = new Set();
+    for (const t of (tx || [])) { const age = (now - new Date(t.created_at).getTime()) / 86400000; if (age <= 7) a7.add(t.tg_id); if (age <= 30) a30.add(t.tg_id); }
+    const { data: goals } = await db.from('goals').select('id');
+    let msg = '📈 Статистика\n\n';
+    msg += '👥 Всего пользователей: ' + ids.size + '\n';
+    msg += '🟢 Активны за 7 дней: ' + a7.size + '\n';
+    msg += '🔵 Активны за 30 дней: ' + a30.size + '\n';
+    msg += '🧾 Всего операций: ' + (tx ? tx.length : 0) + '\n';
+    msg += '🎯 Целей создано: ' + (goals ? goals.length : 0);
+    await ctx.reply(msg);
+  } catch (e) { console.error(e); await ctx.reply('⚠️ ' + e.message); }
+});
+function askDeleteAll(ctx) { const ik = new InlineKeyboard().text('🗑 Да, удалить ВСЁ', 'delmydatayes').text('Отмена', 'celcancel'); return ctx.reply('⚠️ Удалить ВСЕ твои данные — операции, реквизиты, цели и бюджеты? Это навсегда, без восстановления.\n\nСовет: сначала можно сделать выгрузку — напиши «экспорт».', { reply_markup: ik }); }
+bot.command('deleteall', (ctx) => askDeleteAll(ctx));
+bot.callbackQuery('delmydatayes', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const id = ctx.from.id;
+  await db.from('transactions').delete().eq('tg_id', id);
+  await db.from('accounts').delete().eq('tg_id', id);
+  await db.from('goals').delete().eq('tg_id', id);
+  await db.from('budgets').delete().eq('tg_id', id);
+  try { await db.from('user_settings').delete().eq('tg_id', id); } catch (e) { }
+  await ctx.reply('🧹 Готово. Все твои данные удалены. Чистый лист 🤍', { reply_markup: mainKb });
+});
 bot.callbackQuery(/^txedit:(\d+)$/, async (ctx) => {
   const id = Number(ctx.match[1]);
   const { data: t } = await db.from('transactions').select('*').eq('id', id).single();
@@ -472,8 +546,8 @@ bot.callbackQuery(/^accdelyes:(\d+)$/, async (ctx) => { const id = Number(ctx.ma
 
 bot.callbackQuery('report:all', async (ctx) => { await ctx.answerCallbackQuery(); await ctx.reply('⏳ Собираю отчёт...'); return doReport(ctx, null); });
 bot.callbackQuery(/^report:(\d+)$/, async (ctx) => { const id = Number(ctx.match[1]); const accs = await getAccounts(ctx.from.id); const acc = accs.find(a => a.id === id); await ctx.answerCallbackQuery(); await ctx.reply('⏳ Собираю отчёт...'); return doReport(ctx, acc ? acc.name : null); });
-bot.callbackQuery(/^txnacc:(\d+)$/, async (ctx) => { const id = Number(ctx.match[1]); const t = pendingTxn.get(ctx.from.id); if (!t) { await ctx.answerCallbackQuery('Операция уже записана'); return; } pendingTxn.delete(ctx.from.id); const accs = await getAccounts(ctx.from.id); const acc = accs.find(a => a.id === id); await ctx.answerCallbackQuery(); await saveTransactions(ctx.from.id, [{ ...t, account: acc ? acc.name : null }]); await ctx.reply('Записал ✅' + (acc ? ' → реквизит «' + acc.name + '»' : ''), { reply_markup: mainKb }); });
-bot.callbackQuery('txnaccnone', async (ctx) => { const t = pendingTxn.get(ctx.from.id); if (!t) { await ctx.answerCallbackQuery('Операция уже записана'); return; } pendingTxn.delete(ctx.from.id); await ctx.answerCallbackQuery(); await saveTransactions(ctx.from.id, [{ ...t, account: null }]); await ctx.reply('Записал ✅ (в общий)', { reply_markup: mainKb }); });
+bot.callbackQuery(/^txnacc:(\d+)$/, async (ctx) => { const id = Number(ctx.match[1]); const t = pendingTxn.get(ctx.from.id); if (!t) { await ctx.answerCallbackQuery('Операция уже записана'); return; } pendingTxn.delete(ctx.from.id); const accs = await getAccounts(ctx.from.id); const acc = accs.find(a => a.id === id); await ctx.answerCallbackQuery(); await saveTransactions(ctx.from.id, [{ ...t, account: acc ? acc.name : null }]); await ctx.reply('Записал ✅' + (acc ? ' → реквизит «' + acc.name + '»' : '') + await spendNudge(ctx.from.id, t), { reply_markup: mainKb }); });
+bot.callbackQuery('txnaccnone', async (ctx) => { const t = pendingTxn.get(ctx.from.id); if (!t) { await ctx.answerCallbackQuery('Операция уже записана'); return; } pendingTxn.delete(ctx.from.id); await ctx.answerCallbackQuery(); await saveTransactions(ctx.from.id, [{ ...t, account: null }]); await ctx.reply('Записал ✅ (в общий)' + await spendNudge(ctx.from.id, t), { reply_markup: mainKb }); });
 bot.callbackQuery('txnaccnew', async (ctx) => { if (!pendingTxn.has(ctx.from.id)) { await ctx.answerCallbackQuery('Операция уже записана'); return; } pendingAccName.set(ctx.from.id, true); await ctx.answerCallbackQuery(); await ctx.reply('Напиши название нового реквизита (например: «Каспи Голд» или «Зарплата Halyk»):'); });
 
 bot.callbackQuery('bulkacc:bank', async (ctx) => {
@@ -552,7 +626,7 @@ async function handleText(ctx, text) {
     const t = pendingTxn.get(ctx.from.id);
     if (!name) return ctx.reply('Пустое название. Введи трату ещё раз.', { reply_markup: mainKb });
     try { await upsertAccount(ctx.from.id, name); } catch (err) { return ctx.reply('⚠️ Не смог создать реквизит.\n\n' + err.message, { reply_markup: mainKb }); }
-    if (t) { pendingTxn.delete(ctx.from.id); await saveTransactions(ctx.from.id, [{ ...t, account: name }]); return ctx.reply('✅ Создал реквизит «' + name + '» и записал туда операцию.', { reply_markup: mainKb }); }
+    if (t) { pendingTxn.delete(ctx.from.id); await saveTransactions(ctx.from.id, [{ ...t, account: name }]); return ctx.reply('✅ Создал реквизит «' + name + '» и записал туда операцию.' + await spendNudge(ctx.from.id, t), { reply_markup: mainKb }); }
     return ctx.reply('✅ Реквизит «' + name + '» создан.', { reply_markup: mainKb });
   }
   if (pendingBudget.has(ctx.from.id)) {
@@ -615,6 +689,8 @@ async function handleText(ctx, text) {
     if (r.action === 'budget_show') return doBudgetMenu(ctx);
     if (r.action === 'tx_list') return doRecentTx(ctx);
     if (r.action === 'balance') return doBalance(ctx);
+    if (r.action === 'export') return doExport(ctx);
+    if (r.action === 'delete' && r.what === 'all_data') return askDeleteAll(ctx);
     if (r.action === 'delete') {
       const what = r.what || 'account';
       const nm = (r.name || '').toString().toLowerCase().trim();
