@@ -99,21 +99,29 @@ async function assistant(userText, contextText) {
   const sys = 'Ты — личный финансовый ИИ-ассистент пользователя в Telegram, тёплый и умный, общаешься по-человечески на русском. Сегодня ' + today + '.\n' +
     'Твоя зона — личные финансы этого пользователя: траты, доходы, отчёты, бюджеты, цели, реквизиты (счета). Если просят не про финансы (нарисовать картинку, написать код, общие вопросы) — мягко откажись и предложи помочь с деньгами. На приветствия отвечай дружелюбно и коротко.\n' +
     'У тебя есть данные пользователя (ниже). Когда спрашивают про суммы, отчёт или «сколько потратил/заработал» — посчитай по данным и ответь живым текстом с конкретными цифрами в тенге, кратко и по делу.\n' +
-    'Верни ТОЛЬКО JSON. Поле action — одно из: "reply","expense","budget_set","goal_create","account_create","report_file","advice","goals_show","budget_show".\n' +
+    'Верни ТОЛЬКО JSON. Поле action — одно из: "reply","expense","budget_set","goal_create","account_create","report_file","advice","goals_show","budget_show","delete".\n' +
     '- reply: ответь текстом — приветствие, ответ на вопрос про финансы с цифрами, вежливый отказ. Текст положи в поле reply.\n' +
     '- expense: пользователь сообщил трату или доход → date (YYYY-MM-DD, по умолчанию сегодня), description, amount (число; расход отрицательный, доход положительный), currency (валюта суммы: KZT/USD/EUR/RUB; «доллар»→USD, «рубль»→RUB, «евро»→EUR, по умолчанию KZT), category (Транспорт/Еда/Покупки/Подписки/Развлечения/Аренда/Переводы/Доход/Прочее), person (имя или "").\n' +
     '- budget_set: category, amount.\n' +
-    '- goal_create: name, target, deadline (YYYY-MM-DD или "").\n' +
+    '- goal_create: создать цель накопления → target (ЧИСЛО — сумма цели в тенге, сколько накопить), name (короткое название на что копим, БЕЗ суммы и даты; если не сказано — "Цель"), deadline (YYYY-MM-DD или ""). Пример: «накопить 150000 на отпуск к 1 сентября» → name:"Отпуск", target:150000, deadline:"2026-09-01".\n' +
     '- account_create: name.\n' +
+    '- delete: пользователь просит что-то удалить → what ("account" — реквизит/отчёт, "goal" — цель, "budget" — бюджет, "all_reports" — все реквизиты сразу), name (название реквизита/цели или категория бюджета; "все"/"" если все или не уточнил).\n' +
     '- report_file: пользователь просит именно ФАЙЛ/Excel-отчёт → account (название реквизита или ""), period (период: "all" — за всё время, "1m" — последний месяц, "3m" — 3 месяца, "6m" — полгода, "12m" — год; по умолчанию "all").\n' +
     '- advice: просит совет по экономии. goals_show: показать цели кнопками. budget_show: показать бюджеты.\n' +
+    'Действуй уверенно: если это команда (запиши трату, покажи отчёт, удали, поставь бюджет, создай цель/реквизит) — сразу выбирай нужное действие, не переспрашивай. Отказывай (reply) только если просьба вообще не про финансы. Примеры: «запиши кофе 1500»→expense; «покажи отчёт по Kaspi за 3 месяца»→report_file; «удали цель отпуск»→delete; «поставь лимит на еду 80000»→budget_set; «создай реквизит Каспи»→account_create; «сколько потратил за месяц»→reply с цифрами.\n' +
     'Данные пользователя:\n' + contextText;
   const c = await openai.chat.completions.create({ model: 'gpt-4o-mini', response_format: { type: 'json_object' }, messages: [{ role: 'system', content: sys }, { role: 'user', content: userText }] });
   return JSON.parse(c.choices[0].message.content);
 }
-async function transcribeVoice(buffer) { const file = await toFile(buffer, 'voice.ogg'); const r = await openai.audio.transcriptions.create({ file, model: 'whisper-1' }); return (r.text || '').trim(); }
+async function transcribeOnce(buffer, model, prompt) { const file = await toFile(buffer, 'voice.ogg'); const r = await openai.audio.transcriptions.create({ file, model, prompt }); return (r.text || '').trim(); }
+async function transcribeVoice(buffer) {
+  const prompt = 'Финансовый помощник. Возможные слова: тенге, доллар, рубль, евро, Kaspi, Halyk, реквизит, отчёт, бюджет, цель, потратил, заработал, доход, такси, продукты, кофе, зарплата, удали, покажи, создай, добавь.';
+  try { return await transcribeOnce(buffer, 'gpt-4o-mini-transcribe', prompt); }
+  catch (e) { console.error('transcribe fallback to whisper-1:', e.message); return await transcribeOnce(buffer, 'whisper-1', prompt); }
+}
 async function saveTransactions(tgId, rows) { const toInsert = rows.map(r => ({ tg_id: tgId, op_date: r.op_date, description: r.description, amount: r.amount, category: r.category, person: r.person || null, account: r.account || null })); const { error } = await db.from('transactions').insert(toInsert); if (error) throw error; }
 async function getAccounts(tgId) { const { data } = await db.from('accounts').select('*').eq('tg_id', tgId).order('name', { ascending: true }); return data || []; }
+async function isNewUser(tgId) { const { count } = await db.from('transactions').select('*', { count: 'exact', head: true }).eq('tg_id', tgId); return !count; }
 async function upsertAccount(tgId, name) { const { error } = await db.from('accounts').upsert({ tg_id: tgId, name }, { onConflict: 'tg_id,name' }); if (error) { console.error('upsertAccount failed:', error); throw error; } }
 function txnAccKb(accs) { const ik = new InlineKeyboard(); accs.forEach(a => ik.text('💳 ' + a.name, 'txnacc:' + a.id).row()); ik.text('➕ Новый реквизит', 'txnaccnew').row(); ik.text('🗂 Без реквизита (в общий)', 'txnaccnone'); return ik; }
 function bulkAccKb(accs, bank) { const ik = new InlineKeyboard(); ik.text('📊 Общий «' + bank + '»', 'bulkacc:bank').row(); accs.filter(a => a.name !== bank).forEach(a => ik.text('💳 ' + a.name, 'bulkacc:' + a.id).row()); ik.text('➕ Создать новый отчёт', 'bulkaccnew'); return ik; }
@@ -121,21 +129,21 @@ async function saveBulk(ctx, txns, accountName) { try { await upsertAccount(ctx.
 function pieChartPNG(labels, values) { const W = 420, H = 320 + 24 * labels.length + 20; const cv = createCanvas(W, H), ctx = cv.getContext('2d'); ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H); const total = values.reduce((a, b) => a + b, 0) || 1; const colors = ['#4e79a7','#f28e2b','#e15759','#76b7b2','#59a14f','#edc948','#b07aa1']; let start = -Math.PI / 2; const cx = W / 2, cy = 160, r = 130; values.forEach((v, i) => { const a = (v / total) * Math.PI * 2; ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, r, start, start + a); ctx.closePath(); ctx.fillStyle = colors[i % colors.length]; ctx.fill(); start += a; }); ctx.font = '15px Arial'; labels.forEach((l, i) => { const y = 320 + i * 24; ctx.fillStyle = colors[i % colors.length]; ctx.fillRect(16, y, 16, 16); ctx.fillStyle = '#222222'; ctx.fillText(l + ' — ' + Math.round(values[i] / total * 100) + '%', 40, y + 13); }); return cv.toBuffer('image/png'); }
 function barChartPNG(labels, plan, actual) { const rowH = 46, padTop = 46, padLeft = 140, padRight = 70, W = 580, H = padTop + labels.length * rowH + 34; const cv = createCanvas(W, H), x = cv.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, W, H); x.fillStyle = '#222'; x.font = 'bold 16px Arial'; x.fillText('План vs Факт', padLeft, 26); const maxV = Math.max(1, ...plan, ...actual), barW = W - padLeft - padRight; x.font = '13px Arial'; labels.forEach((l, i) => { const y = padTop + i * rowH; x.fillStyle = '#222'; x.textAlign = 'right'; x.fillText(l, padLeft - 8, y + 15); x.textAlign = 'left'; x.fillStyle = '#9dc3e6'; x.fillRect(padLeft, y, (plan[i] / maxV) * barW, 14); x.fillStyle = actual[i] > plan[i] ? '#e15759' : '#59a14f'; x.fillRect(padLeft, y + 18, (actual[i] / maxV) * barW, 14); }); const ly = H - 22; x.fillStyle = '#9dc3e6'; x.fillRect(padLeft, ly, 14, 14); x.fillStyle = '#222'; x.fillText('План', padLeft + 20, ly + 12); x.fillStyle = '#59a14f'; x.fillRect(padLeft + 80, ly, 14, 14); x.fillStyle = '#222'; x.fillText('Факт <= плана', padLeft + 100, ly + 12); x.fillStyle = '#e15759'; x.fillRect(padLeft + 230, ly, 14, 14); x.fillStyle = '#222'; x.fillText('Факт > плана', padLeft + 250, ly + 12); return cv.toBuffer('image/png'); }
 
-async function doHelp(ctx) {
-  const msg = '🤖 Я твой финансовый помощник. Со мной можно просто разговаривать — голосом 🎤 или текстом.\n\n' +
-    '💸 Записать трату или доход\nСкажи или напиши: «кофе 1500», «такси 800 вчера», «зарплата 400000» — я пойму и спрошу, куда записать.\n\n' +
-    '📄 Разобрать выписку\nПришли PDF из Kaspi или Halyk — разложу по категориям сам.\n\n' +
-    '📊 Отчёт — кнопка «Отчёт» или спроси словами: «сколько я потратил за месяц?». Пришлю и Excel.\n' +
-    '📋 Бюджет — задать лимит на категорию (еда, транспорт…).\n' +
-    '🎯 Цели — копить к дате, можно пополнять в один тап.\n' +
-    '🤖 Советы — разбор твоих трат и идеи, где сэкономить.\n' +
-    '💬 Фидбек — напиши, что улучшить или какой фишки не хватает.\n\n' +
-    '💡 Можно ничего не нажимать — просто скажи, что хочешь.';
-  return ctx.reply(msg, { reply_markup: mainKb });
-}
+const GUIDE = '📘 Как пользоваться — всё просто:\n\n' +
+  '1️⃣  Добавляй траты\n' +
+  'Пиши или говори как другу: «такси 800», «продукты 5000 вчера».\n' +
+  'Или пришли PDF-выписку из банка 📄 — разберу всё сам.\n\n' +
+  '2️⃣  Смотри, куда уходят деньги\n' +
+  'Спроси словами: «сколько я потратил за месяц?» — отвечу.\n' +
+  'Или жми 📊 Отчёт — пришлю наглядный файл.\n\n' +
+  '3️⃣  Ставь цели и бюджеты\n' +
+  '🎯 копить к дате  ·  📋 лимиты по категориям.\n\n' +
+  '💡 Можно ничего не нажимать — просто скажи, что хочешь.\n' +
+  '🔒 Твои данные видишь только ты.';
+async function doHelp(ctx) { return ctx.reply(GUIDE, { reply_markup: mainKb }); }
 async function doFeedbackPrompt(ctx) {
   pendingFeedback.set(ctx.from.id, true);
-  return ctx.reply('💬 Что улучшить или какой фишки не хватает? Напиши одним сообщением — я передам разработчику.\n\nНапример: «в отчёте не хватает фильтра по датам» или «хочу напоминания о тратах».', { reply_markup: mainKb });
+  return ctx.reply('💬 Что улучшить или какой фишки не хватает? Напиши одним сообщением — или пришли скриншот 📸 (можно с подписью). Я всё передам разработчику.\n\nНапример: «в отчёте не хватает фильтра по датам» или скрин с проблемой.', { reply_markup: mainKb });
 }
 async function saveFeedback(ctx, text) {
   const who = (ctx.from.first_name || '') + (ctx.from.username ? ' @' + ctx.from.username : '') + ' (id ' + ctx.from.id + ')';
@@ -149,8 +157,8 @@ async function saveFeedback(ctx, text) {
   catch (e) { console.error('feedback save failed:', e.message); }
 }
 async function doAdvice(ctx) { try { const { data } = await db.from('transactions').select('*').eq('tg_id', ctx.from.id); if (!data || !data.length) return ctx.reply('Пока нет данных.', { reply_markup: mainKb }); let income = 0, expense = 0; const byCat = {}; for (const r of data) { const a = Number(r.amount); if (a > 0) income += a; else { byCat[r.category] = (byCat[r.category] || 0) + (-a); expense += -a; } } const summary = Object.entries(byCat).map(([c, s]) => c + ': ' + s).join(', '); await ctx.reply('🤖 Анализирую...'); const cc = await openai.chat.completions.create({ model: 'gpt-4o-mini', messages: [ { role: 'system', content: 'Ты заботливый финпомощник. Дай 3-4 коротких добрых конкретных совета по экономии на русском. Без осуждения. Каждый с эмодзи и новой строки.' }, { role: 'user', content: 'Доход: ' + income + ' тг. Расходы: ' + summary + '. Всего: ' + expense + ' тг.' } ] }); await ctx.reply(cc.choices[0].message.content + '\n\n(общие советы, не финконсультация)', { reply_markup: mainKb }); } catch (err) { console.error(err); await ctx.reply('⚠️ Не смог собрать советы.'); } }
-async function doBudgetMenu(ctx) { const { data } = await db.from('budgets').select('*').eq('tg_id', ctx.from.id); let msg = '📋 Бюджеты:\n'; if (!data || !data.length) msg += '(не заданы)\n'; else for (const x of data) msg += '• ' + x.category + ': ' + fmt(Number(x.amount)) + ' ₸/мес\n'; msg += '\nВыбери категорию, чтобы задать/изменить:'; const ik = new InlineKeyboard(); BUDGET_CATS.forEach((c, i) => { ik.text(c, 'budcat:' + c); if (i % 2 === 1) ik.row(); }); if (data && data.length) { ik.row(); data.forEach(x => ik.text('🗑 Удалить: ' + x.category, 'buddel:' + x.category).row()); } return ctx.reply(msg, { reply_markup: ik }); }
-async function doGoals(ctx) { const { data } = await db.from('goals').select('*').eq('tg_id', ctx.from.id).order('deadline', { ascending: true, nullsFirst: false }); let msg = '🎯 Твои цели:\n'; if (!data || !data.length) msg += '(пока нет)\n'; else for (const g of data) { const pct = g.target ? Math.round(Number(g.saved) / Number(g.target) * 100) : 0; msg += '\n• ' + g.name + (g.deadline ? ' (до ' + g.deadline + ')' : '') + '\n' + progressBar(pct) + ' ' + pct + '% — ' + fmt(Number(g.saved)) + '/' + fmt(Number(g.target)) + ' ₸\n'; } msg += '\nВыбери действие:'; const ik = new InlineKeyboard().text('➕ Новая цель', 'goalnew').row(); (data || []).forEach(g => { ik.text('💰 Пополнить: ' + g.name, 'goaltop:' + g.id).row(); ik.text('🗑 Удалить: ' + g.name, 'goaldel:' + g.id).row(); }); return ctx.reply(msg, { reply_markup: ik }); }
+async function doBudgetMenu(ctx) { const { data } = await db.from('budgets').select('*').eq('tg_id', ctx.from.id); let msg = '📋 Бюджеты:\n'; if (!data || !data.length) msg += '\nПока не заданы. Бюджет — это лимит на категорию в месяц (например, «Еда — 80 000 ₸»), бот покажет, укладываешься ли ты.\n'; else for (const x of data) msg += '• ' + x.category + ': ' + fmt(Number(x.amount)) + ' ₸/мес\n'; msg += '\nВыбери категорию, чтобы задать/изменить:'; const ik = new InlineKeyboard(); BUDGET_CATS.forEach((c, i) => { ik.text(c, 'budcat:' + c); if (i % 2 === 1) ik.row(); }); if (data && data.length) { ik.row(); data.forEach(x => ik.text('🗑 Удалить: ' + x.category, 'buddel:' + x.category).row()); } return ctx.reply(msg, { reply_markup: ik }); }
+async function doGoals(ctx) { const { data } = await db.from('goals').select('*').eq('tg_id', ctx.from.id).order('deadline', { ascending: true, nullsFirst: false }); let msg = '🎯 Твои цели:\n'; if (!data || !data.length) msg += '\nПока нет ни одной. Создай первую — например скажи: «накопить 300000 на отпуск к сентябрю», или жми ➕ Новая цель ниже.\n'; else for (const g of data) { const pct = g.target ? Math.round(Number(g.saved) / Number(g.target) * 100) : 0; msg += '\n• ' + g.name + (g.deadline ? ' (до ' + g.deadline + ')' : '') + '\n' + progressBar(pct) + ' ' + pct + '% — ' + fmt(Number(g.saved)) + '/' + fmt(Number(g.target)) + ' ₸\n'; } msg += '\nВыбери действие:'; const ik = new InlineKeyboard().text('➕ Новая цель', 'goalnew').row(); (data || []).forEach(g => { ik.text('💰 Пополнить: ' + g.name, 'goaltop:' + g.id).row(); ik.text('🗑 Удалить: ' + g.name, 'goaldel:' + g.id).row(); }); return ctx.reply(msg, { reply_markup: ik }); }
 
 async function doReport(ctx, account, periodMonths) {
   try {
@@ -245,7 +253,7 @@ async function doReport(ctx, account, periodMonths) {
 async function doReportMenu(ctx) {
   const accs = await getAccounts(ctx.from.id);
   const { count } = await db.from('transactions').select('*', { count: 'exact', head: true }).eq('tg_id', ctx.from.id);
-  if (!count) return ctx.reply('Пока нет данных. Пришли выписку или напиши трату.', { reply_markup: mainKb });
+  if (!count) return ctx.reply('Пока не из чего собрать отчёт 🙂\nПришли PDF-выписку 📄 или запиши пару трат («кофе 1500» / голосом) — и я всё посчитаю и покажу картину.', { reply_markup: mainKb });
   if (!accs.length) return doReport(ctx, null);
   const ik = new InlineKeyboard().text('📊 Общий (все реквизиты)', 'report:all').row();
   accs.forEach(a => ik.text('💳 ' + a.name, 'report:' + a.id).text('🗑', 'accdel:' + a.id).row());
@@ -271,7 +279,24 @@ async function checkReminders() {
   } catch (e) { console.error('checkReminders', e); }
 }
 
-bot.command('start', (ctx) => ctx.reply('Привет, ' + (ctx.from.first_name || 'друг') + '! Я твой личный финансовый помощник 💰\n\nСо мной можно просто разговаривать. Скажи голосом 🎤 или напиши трату («кофе 1500»), пришли PDF-выписку 📄 или спроси «сколько я потратил за месяц?».\n\nВсё, что ты добавляешь, видишь только ты.\n👉 Не знаешь с чего начать — жми ❓ Помощь.', { reply_markup: mainKb }));
+bot.command('start', async (ctx) => {
+  const name = ctx.from.first_name || 'друг';
+  let fresh = true;
+  try { fresh = await isNewUser(ctx.from.id); } catch (e) { console.error(e); }
+  if (!fresh) return ctx.reply('С возвращением, ' + name + '! 👋\nЧем помочь? Скажи трату, пришли выписку или спроси про свои финансы.', { reply_markup: mainKb });
+  const ik = new InlineKeyboard().text('✍️ Попробовать на примере', 'tryexample').row().text('❓ Как это работает', 'howto');
+  return ctx.reply(
+    'Привет, ' + name + '! 👋\n\n' +
+    'Я помогаю видеть, куда уходят деньги — простым языком, без таблиц.\n\n' +
+    'Со мной можно просто разговаривать. Чтобы добавить трату:\n' +
+    '•  напиши:  кофе 1500\n' +
+    '•  или скажи голосом 🎤\n' +
+    '•  или пришли PDF-выписку 📄\n\n' +
+    'Потом спроси «сколько я потратил?» — и я покажу.\n\n' +
+    'С чего начнём? 👇',
+    { reply_markup: ik });
+});
+bot.command('help', (ctx) => doHelp(ctx));
 bot.command('report', (ctx) => doReportMenu(ctx));
 bot.command('advice', (ctx) => doAdvice(ctx));
 bot.command('budget', (ctx) => doBudgetMenu(ctx));
@@ -318,6 +343,9 @@ bot.callbackQuery(/^goaladd:(\d+):(\d+)$/, async (ctx) => {
 bot.callbackQuery(/^goalcustom:(\d+)$/, async (ctx) => { pendingGoal.set(ctx.from.id, { mode: 'top', id: Number(ctx.match[1]) }); await ctx.answerCallbackQuery(); await ctx.reply('Напиши сумму в тенге, которую добавить к цели:'); });
 
 bot.callbackQuery('celcancel', async (ctx) => { await ctx.answerCallbackQuery('Отменено'); await ctx.reply('Отменено 👌', { reply_markup: mainKb }); });
+bot.callbackQuery('howto', async (ctx) => { await ctx.answerCallbackQuery(); await ctx.reply(GUIDE, { reply_markup: mainKb }); });
+bot.callbackQuery('tryexample', async (ctx) => { await ctx.answerCallbackQuery(); await ctx.reply('Смотри 👇 я сам разберу фразу «кофе 1500» — тебе останется выбрать, куда записать:'); return handleText(ctx, 'кофе 1500'); });
+bot.callbackQuery('delallyes', async (ctx) => { await ctx.answerCallbackQuery(); await db.from('transactions').delete().eq('tg_id', ctx.from.id); await db.from('accounts').delete().eq('tg_id', ctx.from.id); await ctx.reply('🗑 Все реквизиты и операции удалены. Чистый лист 🤍', { reply_markup: mainKb }); });
 bot.callbackQuery(/^goaldel:(\d+)$/, async (ctx) => { const id = Number(ctx.match[1]); const { data: g } = await db.from('goals').select('name').eq('id', id).single(); await ctx.answerCallbackQuery(); const ik = new InlineKeyboard().text('🗑 Да, удалить', 'goaldelyes:' + id).text('Отмена', 'celcancel'); await ctx.reply('Удалить цель' + (g ? ' «' + g.name + '»' : '') + '? Это навсегда.', { reply_markup: ik }); });
 bot.callbackQuery(/^goaldelyes:(\d+)$/, async (ctx) => { const id = Number(ctx.match[1]); await db.from('goals').delete().eq('id', id).eq('tg_id', ctx.from.id); await ctx.answerCallbackQuery('Удалено'); await ctx.reply('🗑 Цель удалена.', { reply_markup: mainKb }); });
 bot.callbackQuery(/^buddel:(.+)$/, async (ctx) => { const cat = ctx.match[1]; await db.from('budgets').delete().eq('tg_id', ctx.from.id).eq('category', cat); await ctx.answerCallbackQuery('Бюджет удалён'); await ctx.reply('🗑 Бюджет «' + cat + '» удалён.', { reply_markup: mainKb }); });
@@ -408,9 +436,18 @@ async function handleText(ctx, text) {
     const p = pendingGoal.get(ctx.from.id); pendingGoal.delete(ctx.from.id);
     if (p.mode === 'new') {
       let str = text.trim(); let deadline = null;
-      const dm = str.match(/(\d{2}\.\d{2}\.\d{4})\s*$/); if (dm) { deadline = toISO(dm[1]); str = str.slice(0, dm.index).trim(); }
-      const am = str.match(/([\d\s]+)$/); const target = am ? parseInt(am[0].replace(/\D/g, ''), 10) : NaN; const name = am ? str.slice(0, am.index).trim() : str;
-      if (!name || !target) return ctx.reply('Не понял. Формат: Название Сумма Дата. Жми 🎯 Цели.', { reply_markup: mainKb });
+      const dm = str.match(/(\d{1,2})[.\/](\d{1,2})(?:[.\/](\d{2,4}))?/);
+      if (dm && Number(dm[1]) <= 31 && Number(dm[2]) <= 12) {
+        const dd = dm[1].padStart(2, '0'), mm = dm[2].padStart(2, '0');
+        const yyyy = dm[3] ? (dm[3].length === 2 ? '20' + dm[3] : dm[3]) : String(new Date().getFullYear());
+        deadline = yyyy + '-' + mm + '-' + dd;
+        str = (str.slice(0, dm.index) + ' ' + str.slice(dm.index + dm[0].length)).trim();
+      }
+      const nums = (str.match(/\d[\d\s]*\d|\d/g) || []).map(s => parseInt(s.replace(/\s/g, ''), 10)).filter(n => !isNaN(n) && n > 0);
+      const target = nums.length ? Math.max.apply(null, nums) : NaN;
+      let name = str.replace(/\d[\d\s]*/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!name) name = 'Цель';
+      if (!target || isNaN(target)) return ctx.reply('Не понял сумму. Формат: Название Сумма Дата (например: Отпуск 300000 01.09). Жми 🎯 Цели.', { reply_markup: mainKb });
       const { error } = await db.from('goals').insert({ tg_id: ctx.from.id, name, target, saved: 0, deadline });
       if (error) { console.error(error); return ctx.reply('Не смог сохранить цель.'); }
       return ctx.reply('✅ Цель «' + name + '» на ' + fmt(target) + ' ₸' + (deadline ? ' до ' + deadline : '') + ' создана!', { reply_markup: mainKb });
@@ -445,13 +482,40 @@ async function handleText(ctx, text) {
     if (r.action === 'advice') return doAdvice(ctx);
     if (r.action === 'goals_show') return doGoals(ctx);
     if (r.action === 'budget_show') return doBudgetMenu(ctx);
+    if (r.action === 'delete') {
+      const what = r.what || 'account';
+      const nm = (r.name || '').toString().toLowerCase().trim();
+      const all = !nm || nm === 'все' || nm === 'всё' || nm === 'all';
+      if (what === 'goal') {
+        const { data } = await db.from('goals').select('id,name').eq('tg_id', ctx.from.id);
+        const g = (data || []).find(x => x.name.toLowerCase().includes(nm) || (nm && nm.includes(x.name.toLowerCase())));
+        if (g) { const ik = new InlineKeyboard().text('🗑 Да, удалить', 'goaldelyes:' + g.id).text('Отмена', 'celcancel'); return ctx.reply('Удалить цель «' + g.name + '»? Это навсегда.', { reply_markup: ik }); }
+        return doGoals(ctx);
+      }
+      if (what === 'budget') {
+        const { data } = await db.from('budgets').select('category').eq('tg_id', ctx.from.id);
+        const b = (data || []).find(x => nm.includes(x.category.toLowerCase()) || x.category.toLowerCase().includes(nm));
+        if (b) { await db.from('budgets').delete().eq('tg_id', ctx.from.id).eq('category', b.category); return ctx.reply('🗑 Бюджет «' + b.category + '» удалён.', { reply_markup: mainKb }); }
+        return doBudgetMenu(ctx);
+      }
+      const accs = await getAccounts(ctx.from.id);
+      if (what === 'all_reports' || (all && what === 'account')) {
+        if (!accs.length) return ctx.reply('Реквизитов пока нет.', { reply_markup: mainKb });
+        const ik = new InlineKeyboard().text('🗑 Да, удалить всё', 'delallyes').text('Отмена', 'celcancel');
+        return ctx.reply('Удалить ВСЕ реквизиты (' + accs.map(a => a.name).join(', ') + ') и все операции? Это навсегда.', { reply_markup: ik });
+      }
+      const acc = accs.find(a => a.name.toLowerCase().includes(nm) || (nm && nm.includes(a.name.toLowerCase())));
+      if (acc) { const ik = new InlineKeyboard().text('🗑 Да, удалить всё', 'accdelyes:' + acc.id).text('Отмена', 'celcancel'); return ctx.reply('Удалить реквизит «' + acc.name + '» и все его операции? Это навсегда.', { reply_markup: ik }); }
+      return doReportMenu(ctx);
+    }
     if (r.action === 'budget_set') {
       if (BUDGET_CATS.includes(r.category) && r.amount) { await db.from('budgets').upsert({ tg_id: ctx.from.id, category: r.category, amount: Math.round(r.amount) }, { onConflict: 'tg_id,category' }); return ctx.reply('✅ Бюджет «' + r.category + '» = ' + fmt(Math.round(r.amount)) + ' ₸/мес', { reply_markup: mainKb }); }
       return doBudgetMenu(ctx);
     }
     if (r.action === 'goal_create') {
-      if (r.name && r.target) { const deadline = r.deadline && /^\d{4}-\d{2}-\d{2}$/.test(r.deadline) ? r.deadline : null; const { error } = await db.from('goals').insert({ tg_id: ctx.from.id, name: r.name, target: Math.round(r.target), saved: 0, deadline }); if (error) { console.error(error); return ctx.reply('Не смог создать цель.', { reply_markup: mainKb }); } return ctx.reply('✅ Цель «' + r.name + '» на ' + fmt(Math.round(r.target)) + ' ₸' + (deadline ? ' до ' + deadline : '') + ' создана!', { reply_markup: mainKb }); }
-      return doGoals(ctx);
+      const target = Math.round(Number(r.target));
+      if (target > 0) { const name = (r.name && String(r.name).trim()) || 'Цель'; const deadline = r.deadline && /^\d{4}-\d{2}-\d{2}$/.test(r.deadline) ? r.deadline : null; const { error } = await db.from('goals').insert({ tg_id: ctx.from.id, name, target, saved: 0, deadline }); if (error) { console.error(error); return ctx.reply('Не смог создать цель.', { reply_markup: mainKb }); } return ctx.reply('✅ Цель «' + name + '» на ' + fmt(target) + ' ₸' + (deadline ? ' до ' + deadline : '') + ' создана!', { reply_markup: mainKb }); }
+      return ctx.reply('Не понял сумму цели. Скажи, например: «накопить 150000 на отпуск к 1 сентября».', { reply_markup: mainKb });
     }
     if (r.action === 'account_create') {
       if (r.name) { try { await upsertAccount(ctx.from.id, String(r.name).slice(0, 40)); } catch (e) { return ctx.reply('Не смог создать реквизит.', { reply_markup: mainKb }); } return ctx.reply('✅ Реквизит «' + r.name + '» создан. Теперь можешь сохранять в него операции и строить по нему отчёт.', { reply_markup: mainKb }); }
@@ -478,6 +542,23 @@ async function handleText(ctx, text) {
   } catch (err) { console.error(err); await ctx.reply('⚠️ Что-то пошло не так. Попробуй сказать иначе или жми кнопки.'); }
 }
 
+bot.on('message:photo', async (ctx) => {
+  const id = ctx.from.id;
+  if (!pendingFeedback.has(id)) {
+    return ctx.reply('📸 Хочешь оставить отзыв со скрином? Нажми 💬 Фидбек и пришли картинку. А трату можно записать словами или голосом 🙂', { reply_markup: mainKb });
+  }
+  pendingFeedback.delete(id);
+  const caption = (ctx.message.caption || '').trim();
+  const who = (ctx.from.first_name || '') + (ctx.from.username ? ' @' + ctx.from.username : '') + ' (id ' + id + ')';
+  const photo = ctx.message.photo[ctx.message.photo.length - 1];
+  if (process.env.ADMIN_ID) {
+    try { await bot.api.sendPhoto(process.env.ADMIN_ID, photo.file_id, { caption: '💬 Фидбек со скрином\nОт: ' + who + (caption ? '\n\n' + caption : '') }); }
+    catch (e) { console.error('admin photo notify failed:', e.message); }
+  }
+  try { await db.from('feedback').insert({ tg_id: id, username: ctx.from.username || null, name: ctx.from.first_name || null, text: (caption || '[скриншот]') + ' 📸' }); }
+  catch (e) { console.error('feedback save failed:', e.message); }
+  return ctx.reply('Спасибо, скрин получил! 🙏 Очень помогает.', { reply_markup: mainKb });
+});
 bot.on('message:text', (ctx) => handleText(ctx, ctx.message.text));
 
 bot.on(['message:voice', 'message:audio'], async (ctx) => {
@@ -492,6 +573,17 @@ bot.on(['message:voice', 'message:audio'], async (ctx) => {
     return handleText(ctx, text);
   } catch (err) { console.error(err); await ctx.reply('⚠️ Не смог распознать голос. Попробуй ещё раз или напиши текстом.'); }
 });
+
+bot.api.setMyCommands([
+  { command: 'start', description: 'Начать / главное меню' },
+  { command: 'help', description: 'Как пользоваться' },
+  { command: 'report', description: 'Отчёт' },
+  { command: 'goals', description: 'Цели' },
+  { command: 'budget', description: 'Бюджет' },
+  { command: 'advice', description: 'Совет по экономии' },
+]).catch(e => console.error('setMyCommands', e.message));
+
+require('http').createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('Bot is running'); }).listen(process.env.PORT || 3000, () => console.log('HTTP keep-alive на порту ' + (process.env.PORT || 3000)));
 
 checkReminders();
 setInterval(checkReminders, 6 * 60 * 60 * 1000);
