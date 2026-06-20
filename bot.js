@@ -279,6 +279,59 @@ async function checkReminders() {
   } catch (e) { console.error('checkReminders', e); }
 }
 
+async function buildDigest(tgId) {
+  const now = new Date();
+  const iso = d => d.toISOString().slice(0, 10);
+  const d7 = new Date(now); d7.setDate(d7.getDate() - 7);
+  const d14 = new Date(now); d14.setDate(d14.getDate() - 14);
+  const { data } = await db.from('transactions').select('amount,category,op_date').eq('tg_id', tgId).gte('op_date', iso(d14));
+  if (!data || !data.length) return null;
+  let spentWeek = 0, incomeWeek = 0, spentPrev = 0; const byCat = {};
+  const cut = iso(d7);
+  for (const t of data) {
+    const a = Number(t.amount);
+    if (t.op_date >= cut) {
+      if (a < 0) { spentWeek += -a; byCat[t.category] = (byCat[t.category] || 0) + (-a); }
+      else incomeWeek += a;
+    } else if (a < 0) spentPrev += -a;
+  }
+  if (spentWeek === 0 && incomeWeek === 0) return null;
+  let msg = '📅 Итоги недели\n\n';
+  msg += '💸 Потрачено: ' + fmt(Math.round(spentWeek)) + ' ₸\n';
+  if (incomeWeek > 0) msg += '💰 Доход: ' + fmt(Math.round(incomeWeek)) + ' ₸\n';
+  const top = Object.entries(byCat).sort((a, b) => b[1] - a[1])[0];
+  if (top && spentWeek > 0) msg += '🏷 Больше всего на «' + top[0] + '» — ' + fmt(Math.round(top[1])) + ' ₸ (' + Math.round(top[1] / spentWeek * 100) + '%)\n';
+  if (spentPrev > 0) {
+    const diff = Math.round((spentWeek - spentPrev) / spentPrev * 100);
+    if (diff > 5) msg += '📈 Это на ' + diff + '% больше прошлой недели.\n';
+    else if (diff < -5) msg += '📉 Это на ' + Math.abs(diff) + '% меньше прошлой недели — молодец! 👏\n';
+    else msg += '➡️ Примерно как на прошлой неделе.\n';
+  }
+  msg += '\nХочешь подробно — жми 📊 Отчёт.';
+  return msg;
+}
+
+async function checkDigests() {
+  try {
+    const hourAstana = (new Date().getUTCHours() + 5) % 24;
+    if (hourAstana < 9 || hourAstana >= 22) return; // не будим людей ночью
+    const { data: rows } = await db.from('transactions').select('tg_id');
+    if (!rows) return;
+    const ids = [...new Set(rows.map(r => r.tg_id))];
+    const todayStr = new Date().toISOString().slice(0, 10);
+    for (const tgId of ids) {
+      try {
+        const { data: st } = await db.from('user_settings').select('last_digest').eq('tg_id', tgId);
+        const last = st && st[0] && st[0].last_digest ? new Date(st[0].last_digest) : null;
+        if (last && (Date.now() - last.getTime()) / 86400000 < 7) continue;
+        const text = await buildDigest(tgId);
+        if (text) { try { await bot.api.sendMessage(tgId, text, { reply_markup: mainKb }); } catch (e) { console.error('digest send fail', tgId, e.message); } }
+        await db.from('user_settings').upsert({ tg_id: tgId, last_digest: todayStr }, { onConflict: 'tg_id' });
+      } catch (e) { console.error('digest user', tgId, e.message); }
+    }
+  } catch (e) { console.error('checkDigests', e.message); }
+}
+
 bot.command('start', async (ctx) => {
   const name = ctx.from.first_name || 'друг';
   let fresh = true;
@@ -587,5 +640,7 @@ require('http').createServer((req, res) => { res.writeHead(200, { 'Content-Type'
 
 checkReminders();
 setInterval(checkReminders, 6 * 60 * 60 * 1000);
+setTimeout(checkDigests, 30000);
+setInterval(checkDigests, 3 * 60 * 60 * 1000);
 bot.start();
 console.log('Бот запущен ✅');
