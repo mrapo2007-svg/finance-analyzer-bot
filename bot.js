@@ -18,6 +18,7 @@ const pendingAccName = new Map();
 const pendingBulkTxns = new Map();
 const pendingBulkAccName = new Map();
 const pendingFeedback = new Map();
+const pendingTxEdit = new Map();
 
 const CATEGORIES = [
   { name: 'Транспорт',   keywords: ['yandex.go','astana lrt','taksofon','taxofon','такси','indrive','avtobys'] },
@@ -30,6 +31,7 @@ const CATEGORIES = [
   { name: 'Аренда',      keywords: ['аренда','квартир','кск','коммунал'] },
 ];
 const BUDGET_CATS = ['Еда', 'Транспорт', 'Покупки', 'Подписки', 'Развлечения', 'Переводы', 'Прочее'];
+const EDIT_CATS = ['Еда', 'Транспорт', 'Покупки', 'Подписки', 'Развлечения', 'Аренда', 'Связь', 'Образование', 'Переводы', 'Доход', 'Прочее'];
 
 const mainKb = new Keyboard().text('📊 Отчёт').text('🎯 Цели').row().text('📋 Бюджет').text('🤖 Советы').row().text('❓ Помощь').text('💬 Фидбек').resized().persistent();
 
@@ -99,7 +101,7 @@ async function assistant(userText, contextText) {
   const sys = 'Ты — личный финансовый ИИ-ассистент пользователя в Telegram, тёплый и умный, общаешься по-человечески на русском. Сегодня ' + today + '.\n' +
     'Твоя зона — личные финансы этого пользователя: траты, доходы, отчёты, бюджеты, цели, реквизиты (счета). Если просят не про финансы (нарисовать картинку, написать код, общие вопросы) — мягко откажись и предложи помочь с деньгами. На приветствия отвечай дружелюбно и коротко.\n' +
     'У тебя есть данные пользователя (ниже). Когда спрашивают про суммы, отчёт или «сколько потратил/заработал» — посчитай по данным и ответь живым текстом с конкретными цифрами в тенге, кратко и по делу.\n' +
-    'Верни ТОЛЬКО JSON. Поле action — одно из: "reply","expense","budget_set","goal_create","account_create","report_file","advice","goals_show","budget_show","delete".\n' +
+    'Верни ТОЛЬКО JSON. Поле action — одно из: "reply","expense","budget_set","goal_create","account_create","report_file","advice","goals_show","budget_show","delete","tx_list".\n' +
     '- reply: ответь текстом — приветствие, ответ на вопрос про финансы с цифрами, вежливый отказ. Текст положи в поле reply.\n' +
     '- expense: пользователь сообщил трату или доход → date (YYYY-MM-DD, по умолчанию сегодня), description, amount (число; расход отрицательный, доход положительный), currency (валюта суммы: KZT/USD/EUR/RUB; «доллар»→USD, «рубль»→RUB, «евро»→EUR, по умолчанию KZT), category (Транспорт/Еда/Покупки/Подписки/Развлечения/Аренда/Переводы/Доход/Прочее), person (имя или "").\n' +
     '- budget_set: category, amount.\n' +
@@ -107,7 +109,7 @@ async function assistant(userText, contextText) {
     '- account_create: name.\n' +
     '- delete: пользователь просит что-то удалить → what ("account" — реквизит/отчёт, "goal" — цель, "budget" — бюджет, "all_reports" — все реквизиты сразу), name (название реквизита/цели или категория бюджета; "все"/"" если все или не уточнил).\n' +
     '- report_file: пользователь просит именно ФАЙЛ/Excel-отчёт → account (название реквизита или ""), period (период: "all" — за всё время, "1m" — последний месяц, "3m" — 3 месяца, "6m" — полгода, "12m" — год; по умолчанию "all").\n' +
-    '- advice: просит совет по экономии. goals_show: показать цели кнопками. budget_show: показать бюджеты.\n' +
+    '- advice: просит совет по экономии. goals_show: показать цели кнопками. budget_show: показать бюджеты. tx_list: показать последние операции / исправить или поправить трату («покажи последние траты», «исправь покупку», «измени сумму»).\n' +
     'Действуй уверенно: если это команда (запиши трату, покажи отчёт, удали, поставь бюджет, создай цель/реквизит) — сразу выбирай нужное действие, не переспрашивай. Отказывай (reply) только если просьба вообще не про финансы. Примеры: «запиши кофе 1500»→expense; «покажи отчёт по Kaspi за 3 месяца»→report_file; «удали цель отпуск»→delete; «поставь лимит на еду 80000»→budget_set; «создай реквизит Каспи»→account_create; «сколько потратил за месяц»→reply с цифрами.\n' +
     'Данные пользователя:\n' + contextText;
   const c = await openai.chat.completions.create({ model: 'gpt-4o-mini', response_format: { type: 'json_object' }, messages: [{ role: 'system', content: sys }, { role: 'user', content: userText }] });
@@ -332,6 +334,45 @@ async function checkDigests() {
   } catch (e) { console.error('checkDigests', e.message); }
 }
 
+async function doRecentTx(ctx) {
+  const { data } = await db.from('transactions').select('*').eq('tg_id', ctx.from.id).order('op_date', { ascending: false }).order('id', { ascending: false }).limit(10);
+  if (!data || !data.length) return ctx.reply('Пока нет ни одной операции. Запиши трату — скажи «кофе 1500» или пришли выписку 📄.', { reply_markup: mainKb });
+  const ik = new InlineKeyboard();
+  for (const t of data) {
+    const sign = Number(t.amount) >= 0 ? '+' : '−';
+    const d = (t.op_date || '').slice(5);
+    const desc = (t.description || '').slice(0, 18);
+    ik.text(d + ' · ' + desc + ' · ' + sign + fmt(Number(t.amount)) + '₸', 'txedit:' + t.id).row();
+  }
+  return ctx.reply('🧾 Последние операции — выбери, чтобы исправить:', { reply_markup: ik });
+}
+bot.command('edit', (ctx) => doRecentTx(ctx));
+bot.callbackQuery(/^txedit:(\d+)$/, async (ctx) => {
+  const id = Number(ctx.match[1]);
+  const { data: t } = await db.from('transactions').select('*').eq('id', id).single();
+  await ctx.answerCallbackQuery();
+  if (!t) return ctx.reply('Операция не найдена.', { reply_markup: mainKb });
+  const sign = Number(t.amount) >= 0 ? '+' : '−';
+  const ik = new InlineKeyboard().text('✏️ Сумма', 'txf:amt:' + id).text('🏷 Категория', 'txf:cat:' + id).row().text('🗑 Удалить', 'txdel1:' + id);
+  return ctx.reply('🧾 ' + (t.op_date || '') + ' · ' + (t.description || '') + '\n💵 ' + sign + fmt(Number(t.amount)) + ' ₸\n🏷 ' + (t.category || 'Прочее') + '\n\nЧто исправить?', { reply_markup: ik });
+});
+bot.callbackQuery(/^txf:amt:(\d+)$/, async (ctx) => { pendingTxEdit.set(ctx.from.id, { id: Number(ctx.match[1]), field: 'amount' }); await ctx.answerCallbackQuery(); await ctx.reply('Напиши новую сумму в тенге.\nПодсказка: «1500» сохранит знак как был, «+1500» — доход, «-1500» — расход.'); });
+bot.callbackQuery(/^txf:cat:(\d+)$/, async (ctx) => {
+  const id = Number(ctx.match[1]);
+  await ctx.answerCallbackQuery();
+  const ik = new InlineKeyboard();
+  EDIT_CATS.forEach((c, i) => { ik.text(c, 'txsetc:' + id + ':' + c); if (i % 2 === 1) ik.row(); });
+  await ctx.reply('Выбери новую категорию:', { reply_markup: ik });
+});
+bot.callbackQuery(/^txsetc:(\d+):(.+)$/, async (ctx) => {
+  const id = Number(ctx.match[1]); const cat = ctx.match[2];
+  await db.from('transactions').update({ category: cat }).eq('id', id).eq('tg_id', ctx.from.id);
+  await ctx.answerCallbackQuery('Готово');
+  await ctx.reply('✅ Категория изменена на «' + cat + '».', { reply_markup: mainKb });
+});
+bot.callbackQuery(/^txdel1:(\d+)$/, async (ctx) => { const id = Number(ctx.match[1]); await ctx.answerCallbackQuery(); const ik = new InlineKeyboard().text('🗑 Да, удалить', 'txdel1y:' + id).text('Отмена', 'celcancel'); await ctx.reply('Удалить эту операцию?', { reply_markup: ik }); });
+bot.callbackQuery(/^txdel1y:(\d+)$/, async (ctx) => { const id = Number(ctx.match[1]); await db.from('transactions').delete().eq('id', id).eq('tg_id', ctx.from.id); await ctx.answerCallbackQuery('Удалено'); await ctx.reply('🗑 Операция удалена.', { reply_markup: mainKb }); });
+
 bot.command('start', async (ctx) => {
   const name = ctx.from.first_name || 'друг';
   let fresh = true;
@@ -457,7 +498,20 @@ async function handleText(ctx, text) {
   text = (text || '').trim();
   if (!text || text.startsWith('/')) return;
   const MENU = ['📊 Отчёт', '🎯 Цели', '📋 Бюджет', '🤖 Советы', '❓ Помощь', '💬 Фидбек'];
-  if (MENU.includes(text)) { const id = ctx.from.id; pendingBudget.delete(id); pendingGoal.delete(id); pendingTxn.delete(id); pendingAccName.delete(id); pendingBulkTxns.delete(id); pendingBulkAccName.delete(id); pendingFeedback.delete(id); }
+  if (MENU.includes(text)) { const id = ctx.from.id; pendingBudget.delete(id); pendingGoal.delete(id); pendingTxn.delete(id); pendingAccName.delete(id); pendingBulkTxns.delete(id); pendingBulkAccName.delete(id); pendingFeedback.delete(id); pendingTxEdit.delete(id); }
+  if (pendingTxEdit.has(ctx.from.id)) {
+    const ed = pendingTxEdit.get(ctx.from.id); pendingTxEdit.delete(ctx.from.id);
+    const raw = text.trim();
+    const n = parseInt(raw.replace(/[^\d]/g, ''), 10);
+    if (isNaN(n) || n <= 0) return ctx.reply('Не понял сумму. Напиши число, например 1500.', { reply_markup: mainKb });
+    const { data: t } = await db.from('transactions').select('amount').eq('id', ed.id).single();
+    if (!t) return ctx.reply('Операция не найдена.', { reply_markup: mainKb });
+    let sign = Number(t.amount) < 0 ? -1 : 1;
+    if (raw.startsWith('+')) sign = 1; else if (raw.startsWith('-')) sign = -1;
+    const newAmount = sign * n;
+    await db.from('transactions').update({ amount: newAmount }).eq('id', ed.id).eq('tg_id', ctx.from.id);
+    return ctx.reply('✅ Сумма изменена на ' + (newAmount >= 0 ? '+' : '−') + fmt(newAmount) + ' ₸.', { reply_markup: mainKb });
+  }
   if (pendingFeedback.has(ctx.from.id)) { pendingFeedback.delete(ctx.from.id); await saveFeedback(ctx, text); return ctx.reply('Спасибо, записал! 🙏 Твой фидбек поможет сделать бота лучше.', { reply_markup: mainKb }); }
   if (pendingBulkAccName.has(ctx.from.id)) {
     pendingBulkAccName.delete(ctx.from.id);
@@ -535,6 +589,7 @@ async function handleText(ctx, text) {
     if (r.action === 'advice') return doAdvice(ctx);
     if (r.action === 'goals_show') return doGoals(ctx);
     if (r.action === 'budget_show') return doBudgetMenu(ctx);
+    if (r.action === 'tx_list') return doRecentTx(ctx);
     if (r.action === 'delete') {
       const what = r.what || 'account';
       const nm = (r.name || '').toString().toLowerCase().trim();
